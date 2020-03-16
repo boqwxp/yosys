@@ -510,6 +510,7 @@ struct Smt2Worker
 		if (cell->type == "$_ANDNOT_") return export_gate(cell, "(and A (not B))");
 		if (cell->type == "$_ORNOT_") return export_gate(cell, "(or A (not B))");
 		if (cell->type == "$_MUX_") return export_gate(cell, "(ite S B A)");
+		if (cell->type == "$_NMUX_") return export_gate(cell, "(not (ite S B A))");
 		if (cell->type == "$_AOI3_") return export_gate(cell, "(not (or (and A B) C))");
 		if (cell->type == "$_OAI3_") return export_gate(cell, "(not (and (or A B) C))");
 		if (cell->type == "$_AOI4_") return export_gate(cell, "(not (or (and A B) (and C D)))");
@@ -535,6 +536,14 @@ struct Smt2Worker
 				if (cell->attributes.count("\\reg"))
 					infostr += " " + cell->attributes.at("\\reg").decode_string();
 				decls.push_back(stringf("; yosys-smt2-%s %s#%d %d %s\n", cell->type.c_str() + 1, get_id(module), idcounter, GetSize(cell->getPort("\\Y")), infostr.c_str()));
+				if (cell->getPort("\\Y").is_wire() && cell->getPort("\\Y").as_wire()->get_bool_attribute("\\maximize")){
+					decls.push_back(stringf("; yosys-smt2-maximize %s#%d\n", get_id(module), idcounter));
+					log("Wire %s is maximized\n", cell->getPort("\\Y").as_wire()->name.str().c_str());
+				}
+				else if (cell->getPort("\\Y").is_wire() && cell->getPort("\\Y").as_wire()->get_bool_attribute("\\minimize")){
+					decls.push_back(stringf("; yosys-smt2-minimize %s#%d\n", get_id(module), idcounter));
+					log("Wire %s is minimized\n", cell->getPort("\\Y").as_wire()->name.str().c_str());
+				}
 				makebits(stringf("%s#%d", get_id(module), idcounter), GetSize(cell->getPort("\\Y")), log_signal(cell->getPort("\\Y")));
 				if (cell->type == "$anyseq")
 					ex_input_eq.push_back(stringf("  (= (|%s#%d| state) (|%s#%d| other_state))", get_id(module), idcounter, get_id(module), idcounter));
@@ -600,7 +609,7 @@ struct Smt2Worker
 			if (cell->type == "$logic_and") return export_reduce(cell, "(and (or A) (or B))", false);
 			if (cell->type == "$logic_or") return export_reduce(cell, "(or A B)", false);
 
-			if (cell->type == "$mux" || cell->type == "$pmux")
+			if (cell->type.in("$mux", "$pmux"))
 			{
 				int width = GetSize(cell->getPort("\\Y"));
 				std::string processed_expr = get_bv(cell->getPort("\\A"));
@@ -1475,7 +1484,7 @@ struct Smt2Backend : public Backend {
 				int indent = 0;
 				while (indent < GetSize(line) && (line[indent] == ' ' || line[indent] == '\t'))
 					indent++;
-				if (line.substr(indent, 2) == "%%")
+				if (line.compare(indent, 2, "%%") == 0)
 					break;
 				*f << line << std::endl;
 			}
@@ -1499,11 +1508,11 @@ struct Smt2Backend : public Backend {
 
 		// extract module dependencies
 		std::map<RTLIL::Module*, std::set<RTLIL::Module*>> module_deps;
-		for (auto &mod_it : design->modules_) {
-			module_deps[mod_it.second] = std::set<RTLIL::Module*>();
-			for (auto &cell_it : mod_it.second->cells_)
-				if (design->modules_.count(cell_it.second->type) > 0)
-					module_deps[mod_it.second].insert(design->modules_.at(cell_it.second->type));
+		for (auto mod : design->modules()) {
+			module_deps[mod] = std::set<RTLIL::Module*>();
+			for (auto cell : mod->cells())
+				if (design->has(cell->type))
+					module_deps[mod].insert(design->module(cell->type));
 		}
 
 		// simple good-enough topological sort
